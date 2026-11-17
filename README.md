@@ -28,6 +28,8 @@ python collect.py --test-minutes 10  # test run: writes to data/raw/test/, print
 python prevalence.py                 # 24 h Jetstream prevalence counts (no text)
 python stats.py                      # summary of data/raw/posts.jsonl
 python stats.py --input data/raw/test/posts.jsonl
+python clean.py                      # -> data/raw/posts_clean.jsonl (original kept)
+python stats.py --clean              # stats for the cleaned file
 python export_public.py              # text-free ID list -> data/public/posts_ids.csv
 ```
 
@@ -81,6 +83,34 @@ collector honours `Retry-After` and `RateLimit-Reset`, or otherwise backs off
 exponentially. When both sources are enabled, search runs first and Jetstream
 runs after it.
 
+### Moderation labels
+
+Search requests send `atproto-accept-labelers: did:plc:ar7c4by46qjdydhdevvrndac`
+(Bluesky's moderation service; set `search.accept_labelers`). Testing showed
+that the AppView applies this labeler **by default** even without the header:
+the response header `atproto-content-labelers` names it, and the labels
+returned are the same. The `labels` array mixes several sources, which
+`stats.py` reports separately:
+
+- **self-labels**: `src` is the author's DID, e.g. `porn` or `graphic-media`
+- **Bluesky moderation**: `src` is `did:plc:ar7c4by46qjdydhdevvrndac`
+- **any other labeler** named in the header
+
+Posts that Bluesky has taken down never appear in search results, so they
+cannot be counted here.
+
+### Cleaning
+
+`clean.py` writes `data/raw/posts_clean.jsonl` and never changes
+`posts.jsonl`. It applies these steps in order:
+
+1. Drop exact duplicate texts after case-folding and collapsing whitespace.
+   The first copy is kept.
+2. Cap each account at `clean.max_per_account` posts (default 5). The posts
+   kept are a random pick with a fixed `clean.seed` (default 42), so the
+   result is reproducible.
+3. Make sure every row has `has_link`.
+
 ### Prevalence mode (Jetstream, counts only)
 
 `prevalence.py` reads the live stream for 24 hours (`prevalence.hours`) and
@@ -130,10 +160,14 @@ file show whether this happened.
 | `text` | post text |
 | `langs` | raw `langs` value from the record (`null` if the field is missing) |
 | `created_at` | `createdAt` from the record (set by the client, so it is not trusted) |
+| `indexed_at` | `indexedAt` from the AppView post view (search only, otherwise `null`) |
 | `collected_at` | UTC time the collector stored the post |
 | `is_reply` | whether the record has a `reply` field |
 | `matched_keywords`, `match_count` | distinct keywords found |
 | `script` | `latin` / `arabic` / `devanagari` / `mixed` |
+| `has_link` | true if the post has a link facet, an external embed, or URL-like text |
+| `labels` | the post's `labels` array from the API (search only, otherwise `null`) |
+| `author_labels` | the author's account-level `labels` array (search only, otherwise `null`) |
 | `source` | `jetstream` or `search` |
 
 `data/raw/deleted.jsonl` holds deletion records:

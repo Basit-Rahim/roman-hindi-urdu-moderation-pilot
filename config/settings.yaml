@@ -38,4 +38,13 @@ search:
   max_pages: 0                 # pages per query; 0 = paginate fully
   sort: latest                 # latest | top
   delay_s: 1                   # pause between requests
+  # Labelers whose labels the AppView should apply (atproto-accept-labelers header).
+  # Bluesky's moderation service is applied by default anyway; sending it makes this explicit.
+  accept_labelers: did:plc:ar7c4by46qjdydhdevvrndac
   max_retries: 5               # retries on 429 / 5xx
+
+clean:                       # clean.py
+  input: data/raw/posts.jsonl
+  output: data/raw/posts_clean.jsonl
+  max_per_account: 5         # cap posts per account (random pick)
+  seed: 42                   # fixed seed so the cap is reproducible

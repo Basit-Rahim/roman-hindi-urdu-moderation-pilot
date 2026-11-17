@@ -33,6 +33,8 @@ from filters import KeywordMatcher, detect_script, load_keywords
 ROOT = Path(__file__).resolve().parent
 POST_COLLECTION = "app.bsky.feed.post"
 APP_PASSWORD_RE = re.compile(r"^[a-z0-9]{4}(-[a-z0-9]{4}){3}$")
+BSKY_MODERATION_DID = "did:plc:ar7c4by46qjdydhdevvrndac"   # Bluesky's own moderation service
+LINK_RE = re.compile(r"https?://\S+|www\.\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}/\S*", re.IGNORECASE)
 
 
 # --------------------------------------------------------------------------- settings
@@ -62,6 +64,7 @@ class Settings:
     search_max_pages: int = 0          # 0 = paginate fully
     search_sort: str = "latest"
     search_delay_s: float = 1
+    search_accept_labelers: str = BSKY_MODERATION_DID
     search_max_retries: int = 5
 
 
@@ -96,6 +99,7 @@ def load_settings(path: Path) -> Settings:
     s.search_max_pages = int(se.get("max_pages") or 0)
     s.search_sort = str(se.get("sort", s.search_sort))
     s.search_delay_s = float(se.get("delay_s", s.search_delay_s))
+    s.search_accept_labelers = str(se.get("accept_labelers", s.search_accept_labelers))
     s.search_max_retries = int(se.get("max_retries", s.search_max_retries))
 
     env = os.environ
@@ -156,9 +160,29 @@ def read_jsonl(path: Path) -> Iterator[dict[str, Any]]:
                     continue  # tolerate a half-written last line after a crash
 
 
+def text_has_link(text: str) -> bool:
+    """URL-like text: http(s)://, www., or domain.tld/path (Bluesky shortens link text)."""
+    return bool(LINK_RE.search(text or ""))
+
+
+def record_has_link(record: dict[str, Any]) -> bool:
+    """True if the post links out: a link facet, an external embed, or a URL in the text."""
+    for facet in record.get("facets") or []:
+        for feature in facet.get("features") or []:
+            if str(feature.get("$type", "")).endswith("#link"):
+                return True
+    embed = record.get("embed") or {}
+    for e in (embed, embed.get("media") or {}):
+        if str(e.get("$type", "")).startswith("app.bsky.embed.external"):
+            return True
+    return text_has_link(record.get("text") or "")
+
+
 def build_post(
     *, did: str, rkey: str, record: dict[str, Any], source: str,
     matcher: KeywordMatcher, min_matches: int,
+    indexed_at: str | None = None, labels: list[dict[str, Any]] | None = None,
+    author_labels: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Return the stored row for a post record, or None if it fails the filter."""
     if record.get("$type", POST_COLLECTION) != POST_COLLECTION:
@@ -173,12 +197,16 @@ def build_post(
         "rkey": rkey,
         "text": text,
         "langs": record.get("langs"),  # raw value; None if the field is missing
-        "created_at": record.get("createdAt"),
+        "created_at": record.get("createdAt"),      # set by the posting client
+        "indexed_at": indexed_at,                   # set by the AppView (search only)
         "collected_at": utc_now_iso(),
         "is_reply": "reply" in record and record["reply"] is not None,
         "matched_keywords": matched,
         "match_count": len(matched),
         "script": detect_script(text),
+        "has_link": record_has_link(record),
+        "labels": labels,                # post labels from the API (search only; None = not available)
+        "author_labels": author_labels,  # account-level labels on the author (search only)
         "source": source,
     }
 
@@ -462,8 +490,11 @@ class SearchClient:
     def _get(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         delay = self.s.search_delay_s
         for attempt in range(self.s.search_max_retries + 1):
+            headers = {"Authorization": f"Bearer {self.token}"}
+            if self.s.search_accept_labelers:
+                headers["atproto-accept-labelers"] = self.s.search_accept_labelers
             r = self.http.get(f"{self.s.search_host}/xrpc/{method}", params=params,
-                              headers={"Authorization": f"Bearer {self.token}"}, timeout=30)
+                              headers=headers, timeout=30)
             if r.status_code == 200:
                 return r.json()
             if r.status_code == 400 and "ExpiredToken" in r.text:
@@ -555,10 +586,14 @@ def run_search(c: Collector, deadline: float | None = None) -> list[QueryReport]
                 rep.found += 1
                 c.stats.scanned += 1
                 uri = view.get("uri", "")
-                row = build_post(did=view.get("author", {}).get("did", ""),
+                author = view.get("author", {})
+                row = build_post(did=author.get("did", ""),
                                  rkey=uri.rsplit("/", 1)[-1], record=view.get("record", {}),
                                  source="search", matcher=c.matcher,
-                                 min_matches=c.s.min_matches)
+                                 min_matches=c.s.min_matches,
+                                 indexed_at=view.get("indexedAt"),
+                                 labels=view.get("labels") or [],
+                                 author_labels=author.get("labels") or [])
                 if row:
                     rep.passed += 1
                     rep.kept_new += c.store(row)
