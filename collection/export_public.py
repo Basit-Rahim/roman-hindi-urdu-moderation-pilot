@@ -11,9 +11,8 @@ import csv
 from pathlib import Path
 from typing import Any, Iterable
 
-from collect import read_jsonl
-
-ROOT = Path(__file__).resolve().parent
+from common.config import ROOT
+from common.files import read_jsonl
 COLUMNS = ("uri", "langs", "script", "match_count", "created_at")
 
 

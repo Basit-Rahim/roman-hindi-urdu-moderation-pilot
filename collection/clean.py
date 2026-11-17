@@ -9,15 +9,14 @@ Rows keep their original order.
 from __future__ import annotations
 
 import argparse
-import json
 import random
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-from collect import ROOT, read_jsonl, text_has_link
+from common.config import load_settings
+from common.files import read_jsonl, write_jsonl
+from common.filters import text_has_link
 
 
 def normalize_text(text: str) -> str:
@@ -64,21 +63,17 @@ def clean(rows: list[dict[str, Any]], cap: int, seed: int) -> tuple[list[dict[st
 
 
 def main(argv: list[str] | None = None) -> None:
-    cfg = (yaml.safe_load((ROOT / "config/settings.yaml").read_text(encoding="utf-8")) or {}).get("clean") or {}
+    cfg = load_settings().clean
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument("--input", type=Path, default=ROOT / cfg.get("input", "data/raw/posts.jsonl"))
-    ap.add_argument("--output", type=Path, default=ROOT / cfg.get("output", "data/raw/posts_clean.jsonl"))
-    ap.add_argument("--max-per-account", type=int, default=int(cfg.get("max_per_account", 5)))
-    ap.add_argument("--seed", type=int, default=int(cfg.get("seed", 42)))
+    ap.add_argument("--input", type=Path, default=cfg.input)
+    ap.add_argument("--output", type=Path, default=cfg.output)
+    ap.add_argument("--max-per-account", type=int, default=cfg.max_per_account)
+    ap.add_argument("--seed", type=int, default=cfg.seed)
     args = ap.parse_args(argv)
     if args.input.resolve() == args.output.resolve():
         raise SystemExit("--output must differ from --input (the original is kept)")
     rows, report = clean(list(read_jsonl(args.input)), args.max_per_account, args.seed)
-    tmp = args.output.with_suffix(".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        for r in rows:
-            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-    tmp.replace(args.output)
+    write_jsonl(args.output, rows)
     print(f"{args.input.name} -> {args.output.name}: {report} "
           f"(max_per_account={args.max_per_account}, seed={args.seed})")
 

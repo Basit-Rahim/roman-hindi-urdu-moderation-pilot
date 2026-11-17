@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from filters import KeywordMatcher, detect_script, load_keywords
+from common.filters import KeywordMatcher, detect_script, load_keywords
 
 KEYWORDS = ["hai", "nahi", "kya", "yaar", "bhai", "acha", "tha"]
 

@@ -1,13 +1,10 @@
-"""Client-side filtering: keyword matching and script detection."""
+"""Client-side filtering: keyword matching, script detection and link detection."""
 from __future__ import annotations
 
 import re
 import unicodedata
 from pathlib import Path
-from typing import Iterable
-
-SCRIPTS = ("latin", "arabic", "devanagari")
-
+from typing import Any, Iterable
 
 def load_keywords(path: Path) -> list[str]:
     """Read one keyword per line; skip blanks and '#' comments; lowercase and dedupe."""
@@ -73,3 +70,26 @@ def detect_script(text: str) -> str:
     if len(present) == 1:
         return present.pop()
     return "other"
+
+
+# --------------------------------------------------------------------------- links
+
+LINK_RE = re.compile(r"https?://\S+|www\.\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}/\S*", re.IGNORECASE)
+
+
+def text_has_link(text: str) -> bool:
+    """URL-like text: http(s)://, www., or domain.tld/path (Bluesky shortens link text)."""
+    return bool(LINK_RE.search(text or ""))
+
+
+def record_has_link(record: dict[str, Any]) -> bool:
+    """True if the post links out: a link facet, an external embed, or a URL in the text."""
+    for facet in record.get("facets") or []:
+        for feature in facet.get("features") or []:
+            if str(feature.get("$type", "")).endswith("#link"):
+                return True
+    embed = record.get("embed") or {}
+    for e in (embed, embed.get("media") or {}):
+        if str(e.get("$type", "")).startswith("app.bsky.embed.external"):
+            return True
+    return text_has_link(record.get("text") or "")

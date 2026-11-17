@@ -7,9 +7,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from collect import BSKY_MODERATION_DID, read_jsonl
-
-ROOT = Path(__file__).resolve().parent
+from common.bluesky import BSKY_MODERATION_DID
+from common.config import ROOT
+from common.files import read_jsonl
 MAIN_LANGS = ("en", "ur", "hi")
 
 
@@ -80,7 +80,7 @@ def label_counter(rows: list[dict[str, Any]], field: str) -> tuple[Counter[str],
     available = 0
     for r in rows:
         labels = r.get(field)
-        if labels is None:          # not collected for this row (e.g. Jetstream)
+        if labels is None:          # row collected before labels were stored
             continue
         available += 1
         counts.update({f"{lab.get('val')} [{label_source(lab.get('src', ''), r.get('did', ''))}]"
@@ -112,12 +112,8 @@ def main(argv: list[str] | None = None) -> None:
     if not args.input.exists():
         raise SystemExit(f"No file at {args.input}")
     rows = list(read_jsonl(args.input))
-    deleted = list(read_jsonl(args.input.with_name("deleted.jsonl")))
     print(f"File: {args.input}")
     summarize(rows)
-    if deleted:
-        print(f"\nDeletion records logged: {len(deleted)} "
-              f"({Counter(d.get('type') for d in deleted)})")
 
 
 if __name__ == "__main__":

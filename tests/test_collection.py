@@ -1,7 +1,9 @@
-from collect import (AccountEvent, CommitEvent, build_post, iso_to_us, parse_event,
-                     with_cursor)
-from export_public import public_rows
-from filters import KeywordMatcher
+from collection.export_public import public_rows
+from collection.jetstream import CommitEvent, parse_event, with_cursor
+from collection.prevalence import count_post, empty_counts
+from collection.search import build_post
+from common.filters import KeywordMatcher
+from common.time_utils import iso_to_us
 
 RECORD = {"$type": "app.bsky.feed.post", "text": "Yaar kya hai", "langs": ["en"],
           "createdAt": "2026-11-17T10:43:33.659Z"}
@@ -28,12 +30,12 @@ def test_parse_v2_delete() -> None:
     assert ev.time_us == iso_to_us("2026-11-17T10:43:45.152911Z")
 
 
-def test_parse_v2_account() -> None:
-    msg = {"$type": "message", "payload": {
+def test_non_commit_events_are_ignored() -> None:
+    v2_account = {"$type": "message", "payload": {
         "$type": "network.bsky.jetstream.subscribeEvents#account", "did": "did:plc:c",
         "active": False, "status": "deleted", "seq": 5, "time": "2026-11-17T10:00:00Z"}}
-    ev = parse_event(msg)
-    assert isinstance(ev, AccountEvent) and not ev.active and ev.status == "deleted"
+    v1_identity = {"did": "did:plc:c", "time_us": 1, "kind": "identity", "identity": {}}
+    assert parse_event(v2_account) is None and parse_event(v1_identity) is None
 
 
 def test_iso_to_us_handles_any_fraction() -> None:
@@ -79,7 +81,6 @@ def test_public_rows_drop_text_and_deleted() -> None:
 
 
 def test_prevalence_counts_only_aggregates() -> None:
-    from prevalence import count_post, empty_counts
     m = KeywordMatcher(["yaar", "kya", "hai"])
     counts = empty_counts()
     count_post(counts, RECORD, m, 2)                                 # match, langs en

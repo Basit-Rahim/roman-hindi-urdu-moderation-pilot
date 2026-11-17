@@ -16,15 +16,14 @@ The run is resumable: if the process stops, start it again and it continues
 from the saved cursor until the original end time. Use --fresh to start over.
 
 Usage:
-    python prevalence.py                # 24 h (prevalence.hours in settings.yaml)
-    python prevalence.py --hours 0.05   # 3-minute smoke test
+    python -m collection.prevalence                # 24 h (prevalence.hours) or resume
+    python -m collection.prevalence --hours 0.05   # 3-minute smoke test
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
-import os
 import sys
 import time
 from collections import Counter
@@ -32,11 +31,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-from collect import (ROOT, POST_COLLECTION, CommitEvent, Settings, is_v2_url, load_settings,
-                     parse_event, run_jetstream, utc_now_iso, with_cursor)
-from filters import KeywordMatcher, detect_script, load_keywords
+from collection.jetstream import CommitEvent, is_v2_url, parse_event, run_jetstream, with_cursor
+from common.bluesky import POST_COLLECTION
+from common.config import DEFAULT_SETTINGS_PATH, Settings, load_settings
+from common.files import write_json
+from common.filters import KeywordMatcher, detect_script, load_keywords
+from common.time_utils import utc_now_iso
 
 COUNTER_KEYS = ("scanned_langs", "matched_langs", "matched_scripts", "matched_keywords")
 
@@ -53,8 +53,8 @@ def langs_key(langs: Any) -> str:
     return ",".join(str(x) for x in langs)
 
 
-def bump(counts: dict[str, Any], key: str, value: str, n: int = 1) -> None:
-    counts[key][value] = counts[key].get(value, 0) + n
+def bump(counts: dict[str, Any], key: str, value: str) -> None:
+    counts[key][value] = counts[key].get(value, 0) + 1
 
 
 def hour_key(time_us: int | None) -> str:
@@ -81,13 +81,13 @@ def count_post(counts: dict[str, Any], record: dict[str, Any], matcher: KeywordM
 
 
 class Prevalence:
-    """Jetstream handler that keeps counts only. Driven by collect.run_jetstream."""
+    """Jetstream handler that keeps counts only. Driven by jetstream.run_jetstream."""
 
-    def __init__(self, s: Settings, out: Path, hours: float, save_interval_s: float,
-                 fresh: bool) -> None:
-        self.s = s
+    def __init__(self, s: Settings, out: Path, hours: float, fresh: bool) -> None:
+        self.min_matches = s.min_matches
+        self.save_interval_s = s.prevalence.save_interval_s
+        self.heartbeat_s = s.prevalence.heartbeat_s
         self.out = out
-        self.save_interval_s = save_interval_s
         keywords = load_keywords(s.keywords_file)
         self.matcher = KeywordMatcher(keywords)
         state = None if fresh else self._load()
@@ -103,7 +103,7 @@ class Prevalence:
                 "ends_at": datetime.fromtimestamp(now + hours * 3600, timezone.utc)
                 .isoformat(timespec="seconds").replace("+00:00", "Z"),
                 "finished": False,
-                "jetstream_url": s.jetstream_url,
+                "jetstream_url": s.prevalence.jetstream_url,
                 "min_matches": s.min_matches,
                 "keywords": keywords,
                 "resumes": 0,
@@ -129,9 +129,7 @@ class Prevalence:
 
     def save_checkpoint(self) -> None:
         self.state["saved_at"] = utc_now_iso()
-        tmp = self.out.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.state, indent=1, sort_keys=False), encoding="utf-8")
-        os.replace(tmp, self.out)
+        write_json(self.out, self.state)
         self._last_save = time.monotonic()
 
     def finish(self) -> None:
@@ -168,12 +166,12 @@ class Prevalence:
             ev = parse_event(json.loads(raw))
         except json.JSONDecodeError:
             return
-        if not isinstance(ev, CommitEvent) or self._is_replay(ev):
+        if ev is None or self._is_replay(ev):
             return
         if ev.collection == POST_COLLECTION and ev.operation == "create" and ev.record:
             hourly = self.state["hourly"].setdefault(hour_key(ev.time_us), empty_counts())
             for counts in (self.state["totals"], hourly):
-                count_post(counts, ev.record, self.matcher, self.s.min_matches)
+                count_post(counts, ev.record, self.matcher, self.min_matches)
             self._session_scanned += 1
         if ev.time_us is not None:
             self.state["first_event_time_us"] = self.state["first_event_time_us"] or ev.time_us
@@ -182,7 +180,7 @@ class Prevalence:
         now = time.monotonic()
         if now - self._last_save >= self.save_interval_s:
             self.save_checkpoint()
-        if now - self._last_beat >= self.s.heartbeat_s:
+        if now - self._last_beat >= self.heartbeat_s:
             self.print_status()
 
     def print_status(self, label: str = "status") -> None:
@@ -195,9 +193,12 @@ class Prevalence:
         self._last_beat = time.monotonic()
 
 
-async def _run(p: Prevalence) -> None:
+async def _run(p: Prevalence, s: Settings) -> None:
     try:
-        await asyncio.wait_for(run_jetstream(p), timeout=max(p.remaining_s(), 0))
+        await asyncio.wait_for(
+            run_jetstream(p, s.prevalence.jetstream_url, s.prevalence.backoff_initial_s,
+                          s.prevalence.backoff_max_s),
+            timeout=max(p.remaining_s(), 0))
     except asyncio.TimeoutError:
         pass
 
@@ -206,21 +207,19 @@ def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument("--settings", type=Path, default=ROOT / "config/settings.yaml")
+    ap.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS_PATH)
     ap.add_argument("--hours", type=float, default=None)
     ap.add_argument("--output", type=Path, default=None)
     ap.add_argument("--fresh", action="store_true", help="ignore any saved run and start over")
     args = ap.parse_args(argv)
     s = load_settings(args.settings)
-    raw = yaml.safe_load(args.settings.read_text(encoding="utf-8")) or {}
-    cfg = raw.get("prevalence") or {}
-    hours = args.hours if args.hours is not None else float(cfg.get("hours", 24))
-    out = args.output or ROOT / cfg.get("output", "data/prevalence/prevalence.json")
-    p = Prevalence(s, out, hours, float(cfg.get("save_interval_s", 60)), args.fresh)
+    hours = args.hours if args.hours is not None else s.prevalence.hours
+    out = args.output or s.prevalence.output
+    p = Prevalence(s, out, hours, args.fresh)
     print(f"[prevalence] output={out} ends_at={p.state['ends_at']} "
-          f"min_matches={s.min_matches} url={s.jetstream_url}", flush=True)
+          f"min_matches={s.min_matches} url={s.prevalence.jetstream_url}", flush=True)
     try:
-        asyncio.run(_run(p))
+        asyncio.run(_run(p, s))
     except KeyboardInterrupt:
         print("\n[stopped by user; run again to resume]")
     finally:

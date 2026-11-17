@@ -1,5 +1,5 @@
-from clean import cap_per_account, clean, drop_duplicate_texts
-from collect import record_has_link, text_has_link
+from collection.clean import cap_per_account, clean, drop_duplicate_texts
+from common.filters import record_has_link, text_has_link
 
 
 def row(i: int, did: str, text: str) -> dict:
