@@ -1,23 +1,31 @@
 # Romanized Hindi–Urdu moderation pilot
 
-Research question: *Do platforms and language-ID tools mistake Romanized
+Question: *Do platforms and language-ID tools mistake Romanized
 Hindi–Urdu posts for English?*
 
-So far this repository covers **step 1: collecting candidate posts from
-Bluesky**. Labelling and analysis are not started yet.
+ **step 1: collecting candidate posts from
+Bluesky**
+
 
 ## Repository layout
 
 ```
 config/       settings.yaml, keywords.txt, search_queries.txt
+
 collection/   step 1 scripts: search, prevalence, clean, stats, export_public
               (jetstream.py is the stream client used by prevalence)
+
 common/       shared code: config loading, keyword/script/link filters,
               file and time helpers, Bluesky constants
-labelling/    step 2 (placeholder)
-analysis/     later steps (placeholder)
+
+labelling/    (empty)
+
+analysis/     (empty)
+
 tests/        unit tests (pytest)
+
 data/         outputs; data/raw/ is git-ignored
+
 ```
 
 Every script runs as a module from the repository root, e.g.
@@ -218,10 +226,8 @@ It holds lines like `{"type": "post", "uri": ...}` or
 - Only `collection.export_public` output may be shared. It has no text, but
   each `uri` contains the author's DID, which can be resolved to their
   account. Treat the file as pseudonymous, not anonymous.
-- **Deletions are not currently tracked.** Nothing writes
-  `data/raw/deleted.jsonl` at present. Before publication, a later step must
-  re-check stored URIs against the network, record deleted posts and
-  accounts in that file, and re-run the export.
+- Deleted posts are not tracked automatically. The export removes only the
+  posts and accounts listed in `data/raw/deleted.jsonl`.
 - Example post text is shown only in the terminal during test runs. It is
   never written to public files.
 
