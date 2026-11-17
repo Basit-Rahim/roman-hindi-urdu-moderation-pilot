@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
@@ -59,8 +59,9 @@ class Settings:
     search_host: str = "https://bsky.social"
     search_queries_file: Path = ROOT / "config/search_queries.txt"
     search_page_limit: int = 100
-    search_max_pages: int = 5
-    search_delay_s: float = 2
+    search_max_pages: int = 0          # 0 = paginate fully
+    search_sort: str = "latest"
+    search_delay_s: float = 1
     search_max_retries: int = 5
 
 
@@ -92,7 +93,8 @@ def load_settings(path: Path) -> Settings:
     s.search_host = str(se.get("host", s.search_host)).rstrip("/")
     s.search_queries_file = ROOT / se.get("queries_file", "config/search_queries.txt")
     s.search_page_limit = int(se.get("page_limit", s.search_page_limit))
-    s.search_max_pages = int(se.get("max_pages", s.search_max_pages))
+    s.search_max_pages = int(se.get("max_pages") or 0)
+    s.search_sort = str(se.get("sort", s.search_sort))
     s.search_delay_s = float(se.get("delay_s", s.search_delay_s))
     s.search_max_retries = int(se.get("max_retries", s.search_max_retries))
 
@@ -398,8 +400,18 @@ class Collector:
             self.print_progress("status")
 
 
-async def run_jetstream(c: Collector) -> None:
-    """Consume Jetstream until the target is reached, reconnecting with backoff."""
+class StreamHandler(Protocol):
+    """Anything run_jetstream can drive (Collector, prevalence.Prevalence)."""
+    s: Settings
+
+    def handle_message(self, raw: str | bytes) -> None: ...
+    def done(self) -> bool: ...
+    def resume_url(self, base_url: str) -> str: ...
+    def save_checkpoint(self) -> None: ...
+
+
+async def run_jetstream(c: StreamHandler) -> None:
+    """Consume Jetstream until c.done(), reconnecting with exponential backoff."""
     base = c.s.jetstream_url
     subprotocols = ["xrpc.v1.json"] if is_v2_url(base) else None
     backoff = c.s.backoff_initial_s
@@ -467,18 +479,28 @@ class SearchClient:
             raise RuntimeError(f"{method} failed ({r.status_code}): {r.text[:200]}")
         raise RuntimeError(f"{method}: giving up after {self.s.search_max_retries} retries")
 
-    def search(self, query: str) -> Iterator[dict[str, Any]]:
+    def search(self, query: str) -> Iterator[list[dict[str, Any]]]:
+        """Yield result pages until the API stops returning a cursor.
+
+        search_max_pages <= 0 means no page limit (paginate fully).
+        """
         cursor: str | None = None
-        for _ in range(self.s.search_max_pages):
-            params: dict[str, Any] = {"q": query, "limit": self.s.search_page_limit}
+        pages = 0
+        seen_cursors: set[str] = set()
+        while self.s.search_max_pages <= 0 or pages < self.s.search_max_pages:
+            params: dict[str, Any] = {"q": query, "limit": self.s.search_page_limit,
+                                      "sort": self.s.search_sort}
             if cursor:
                 params["cursor"] = cursor
             data = self._get("app.bsky.feed.searchPosts", params)
-            yield from data.get("posts", [])
+            pages += 1
+            posts = data.get("posts", [])
+            yield posts
             cursor = data.get("cursor")
             time.sleep(self.s.search_delay_s)
-            if not cursor:
+            if not cursor or not posts or cursor in seen_cursors:
                 return
+            seen_cursors.add(cursor)
 
 
 def _retry_after(r: requests.Response) -> float | None:
@@ -495,7 +517,23 @@ def load_queries(path: Path) -> list[str]:
     return [q.strip() for q in lines if q.strip() and not q.strip().startswith("#")]
 
 
-def run_search(c: Collector) -> None:
+@dataclass
+class QueryReport:
+    query: str
+    pages: int = 0
+    found: int = 0        # posts returned by the API
+    passed: int = 0       # passed the keyword filter
+    kept_new: int = 0     # passed and not already stored
+    complete: bool = False
+
+    def line(self) -> str:
+        state = "complete" if self.complete else "stopped early"
+        return (f"[search] '{self.query}': pages={self.pages} found={self.found} "
+                f"passed filter={self.passed} new kept={self.kept_new} ({state})")
+
+
+def run_search(c: Collector, deadline: float | None = None) -> list[QueryReport]:
+    """Run every query in the queries file; stop at the target or at the deadline."""
     handle = os.environ.get("BSKY_HANDLE", "").strip()
     password = os.environ.get("BSKY_APP_PASSWORD", "").strip()
     if not handle or not password:
@@ -505,19 +543,31 @@ def run_search(c: Collector) -> None:
                          "Create one in Bluesky settings; never use your main password.")
     client = SearchClient(c.s, handle, password)
     client.login()
+    print(f"[search] logged in to {c.s.search_host}", flush=True)
+    reports: list[QueryReport] = []
     for query in load_queries(c.s.search_queries_file):
-        before = c.stats.kept_session
-        for view in client.search(query):
-            did = view.get("author", {}).get("did", "")
-            uri = view.get("uri", "")
-            c.stats.scanned += 1
-            row = build_post(did=did, rkey=uri.rsplit("/", 1)[-1], record=view.get("record", {}),
-                             source="search", matcher=c.matcher, min_matches=c.s.min_matches)
-            if row:
-                c.store(row)
-            if c.done():
-                return
-        print(f"[search] '{query}': +{c.stats.kept_session - before} posts", flush=True)
+        rep = QueryReport(query)
+        reports.append(rep)
+        print(f"[search] running '{query}'", flush=True)
+        for page in client.search(query):
+            rep.pages += 1
+            for view in page:
+                rep.found += 1
+                c.stats.scanned += 1
+                uri = view.get("uri", "")
+                row = build_post(did=view.get("author", {}).get("did", ""),
+                                 rkey=uri.rsplit("/", 1)[-1], record=view.get("record", {}),
+                                 source="search", matcher=c.matcher,
+                                 min_matches=c.s.min_matches)
+                if row:
+                    rep.passed += 1
+                    rep.kept_new += c.store(row)
+            if c.done() or (deadline is not None and time.monotonic() >= deadline):
+                print(rep.line(), flush=True)
+                return reports
+        rep.complete = True
+        print(rep.line(), flush=True)
+    return reports
 
 
 # --------------------------------------------------------------------------- main
@@ -561,21 +611,35 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Output: {c.posts_path} (already stored: {c.total}) | target={s.target_count} | "
           f"min distinct keywords={s.min_matches} | keywords={len(load_keywords(s.keywords_file))}",
           flush=True)
+    budget_s = args.test_minutes * 60 if test_mode else None
+    deadline = time.monotonic() + budget_s if budget_s is not None else None
+    reports: list[QueryReport] = []
     try:
         if s.search_enabled and not c.done():
-            run_search(c)
-        if s.jetstream_enabled and not c.done():
-            seconds = args.test_minutes * 60 if test_mode else None
-            asyncio.run(_run_for(c, seconds))
+            reports = run_search(c, deadline)
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if s.jetstream_enabled and not c.done() and (remaining is None or remaining > 0):
+            asyncio.run(_run_for(c, remaining))
     except KeyboardInterrupt:
         print("\n[stopped by user]")
     finally:
         c.close()
         c.print_progress("final")
+        if reports:
+            print_search_summary(reports)
         if c.done():
             print(f"Target of {s.target_count} posts reached.")
         if test_mode:
             print_examples(c, args.examples)
+
+
+def print_search_summary(reports: list[QueryReport]) -> None:
+    print("\n=== search summary ===")
+    for rep in reports:
+        print("  " + rep.line().removeprefix("[search] "))
+    print(f"  queries run: {len(reports)} ({sum(r.complete for r in reports)} complete) | "
+          f"found={sum(r.found for r in reports)} passed filter={sum(r.passed for r in reports)} "
+          f"new kept={sum(r.kept_new for r in reports)}")
 
 
 if __name__ == "__main__":

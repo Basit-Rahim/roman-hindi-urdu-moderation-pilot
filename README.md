@@ -23,8 +23,9 @@ pytest                          # unit tests
 ### Running
 
 ```bash
-python collect.py                    # collect until TARGET_COUNT posts are stored
-python collect.py --test-minutes 5   # test run: writes to data/raw/test/, prints 5 examples
+python collect.py                    # keyword search until TARGET_COUNT posts are stored
+python collect.py --test-minutes 10  # test run: writes to data/raw/test/, prints 5 examples
+python prevalence.py                 # 24 h Jetstream prevalence counts (no text)
 python stats.py                      # summary of data/raw/posts.jsonl
 python stats.py --input data/raw/test/posts.jsonl
 python export_public.py              # text-free ID list -> data/public/posts_ids.csv
@@ -36,7 +37,12 @@ from it. Stored posts are deduplicated by `uri`, so replayed events are safe.
 
 ### Sources
 
-**A. Jetstream (default, no login).** The collector subscribes to
+**Main source: keyword search (Source B).** It is on by default, and Jetstream
+collection is off (`jetstream.enabled: false`). Live-stream test runs found
+no matching posts in about 61,000 posts, so the stream is now used only for
+**prevalence counts**, described below.
+
+**A. Jetstream (no login).** The collector subscribes to
 `app.bsky.feed.post` on Bluesky's public Jetstream WebSocket. Jetstream v2
 (`/xrpc/network.bsky.jetstream.subscribeEvents?collections=...`) is the
 default because the [docs](https://bsky.network/docs/jetstream) recommend it.
@@ -55,22 +61,45 @@ event formats are parsed.
 - If the connection drops, the collector reconnects with exponential backoff
   (1 s, doubling to a maximum of 60 s, with jitter).
 
-**B. Keyword search (optional, off by default).** This source runs
-`app.bsky.feed.searchPosts` on bsky.social once for each query in
-`config/search_queries.txt`.
+**B. Keyword search (main source).** This source runs
+`app.bsky.feed.searchPosts` (`sort=latest`) on bsky.social once for each
+query in `config/search_queries.txt`. Each query is a pair of keywords, such
+as `nahi hai`. Each query is paginated fully until the API stops returning a
+cursor (`max_pages: 0`). The 2-keyword filter and URI deduplication are
+applied as for Jetstream. At the end of a run, a per-query summary lists
+pages, posts found, posts that passed the filter, and new posts kept.
 
 1. Create an **App Password** in Bluesky under Settings → Privacy and
    security → App passwords. **Never use your main password.** The collector
    refuses any password that is not in App Password format
    (`xxxx-xxxx-xxxx-xxxx`).
 2. Put `BSKY_HANDLE` and `BSKY_APP_PASSWORD` in `.env`.
-3. Set `search.enabled: true` in `settings.yaml`, or `SEARCH_ENABLED=true` in
-   `.env`.
+3. Search is enabled by default (`search.enabled: true`).
 
 There is a pause between requests (`delay_s`). On HTTP 429 or 5xx, the
 collector honours `Retry-After` and `RateLimit-Reset`, or otherwise backs off
 exponentially. When both sources are enabled, search runs first and Jetstream
 runs after it.
+
+### Prevalence mode (Jetstream, counts only)
+
+`prevalence.py` reads the live stream for 24 hours (`prevalence.hours`) and
+applies the same filter. It saves **only aggregate counts** to
+`data/prevalence/prevalence.json`, in totals and per UTC hour:
+
+- posts scanned
+- posts matched (2 or more distinct keywords)
+- posts with 1 or more keywords
+- the `langs` values of all scanned posts and of matched posts
+- the scripts of matched posts
+- keyword frequencies among matched posts
+
+No text, URIs, DIDs or handles are saved. The file is rewritten every 60
+seconds. If the process stops, run `python prevalence.py` again: it resumes
+from the saved cursor and still ends at the original end time. Use `--fresh`
+to start over. The machine must stay awake for the whole run. Gaps longer
+than Jetstream's replay window are lost; `connections` and `resumes` in the
+file show whether this happened.
 
 ### Filtering
 

@@ -8,7 +8,7 @@ keywords_file: config/keywords.txt
 output_dir: data/raw
 
 jetstream:
-  enabled: true
+  enabled: false               # main collection uses search; see prevalence.py for the stream
   # v2 (recommended by https://bsky.network/docs/jetstream):
   url: wss://jetstream.us-east.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents?collections=app.bsky.feed.post
   # v1 (legacy) also works, e.g.:
@@ -23,13 +23,19 @@ jetstream:
   record_deletes: collected
 
 progress_every: 100          # print progress every N kept posts
+
+prevalence:                  # prevalence.py: counts only, no text or identifiers
+  hours: 24
+  output: data/prevalence/prevalence.json
+  save_interval_s: 60
 heartbeat_s: 60              # also print a status line at least this often
 
 search:
-  enabled: false               # Source B is off by default
+  enabled: true                # Source B: the main source
   host: https://bsky.social
   queries_file: config/search_queries.txt
   page_limit: 100              # results per request (API max 100)
-  max_pages: 5                 # pages per query
-  delay_s: 2                   # pause between requests
+  max_pages: 0                 # pages per query; 0 = paginate fully
+  sort: latest                 # latest | top
+  delay_s: 1                   # pause between requests
   max_retries: 5               # retries on 429 / 5xx

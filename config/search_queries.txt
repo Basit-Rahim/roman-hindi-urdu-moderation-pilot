@@ -1,14 +1,11 @@
-# Source B (optional): one search query per line, each a keyword pair.
+# Source B: one search query per line, each a pair of common keywords.
 # Both words should be in keywords.txt so results can pass the 2-keyword filter.
+# Each query is paginated fully (sort=latest). Wrap in double quotes for an exact phrase.
 nahi hai
 kya hai
-theek hai
-pata nahi
-sahi hai
-kuch nahi
-bahut acha
 yaar kya
 bhai kya
-mujhe nahi
-kya baat
-haan bhai
+acha hai
+theek hai
+kuch nahi
+pata nahi

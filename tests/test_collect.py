@@ -76,3 +76,16 @@ def test_public_rows_drop_text_and_deleted() -> None:
     out = public_rows(rows, deleted_uris={"at://a/p/2"}, gone_dids={"b"})
     assert out == [{"uri": "at://a/p/1", "langs": "en", "script": "latin", "match_count": 2,
                     "created_at": "t"}]
+
+
+def test_prevalence_counts_only_aggregates() -> None:
+    from prevalence import count_post, empty_counts
+    m = KeywordMatcher(["yaar", "kya", "hai"])
+    counts = empty_counts()
+    count_post(counts, RECORD, m, 2)                                 # match, langs en
+    count_post(counts, {"text": "hai there"}, m, 2)                  # 1 keyword, langs missing
+    count_post(counts, {"text": "hello", "langs": []}, m, 2)         # no keyword
+    assert (counts["scanned"], counts["matched"], counts["matched_1plus"]) == (3, 1, 2)
+    assert counts["scanned_langs"] == {"en": 1, "(missing)": 1, "(empty)": 1}
+    assert counts["matched_langs"] == {"en": 1} and counts["matched_scripts"] == {"latin": 1}
+    assert "Yaar kya hai" not in str(counts)                         # no text stored
