@@ -1,0 +1,14 @@
+# Source B (optional): one search query per line, each a keyword pair.
+# Both words should be in keywords.txt so results can pass the 2-keyword filter.
+nahi hai
+kya hai
+theek hai
+pata nahi
+sahi hai
+kuch nahi
+bahut acha
+yaar kya
+bhai kya
+mujhe nahi
+kya baat
+haan bhai

@@ -1,0 +1,35 @@
+# Collector settings. Environment variables (see .env.example) override
+# the matching keys below: TARGET_COUNT, MIN_MATCHES, JETSTREAM_URL,
+# JETSTREAM_ENABLED, SEARCH_ENABLED.
+
+target_count: 10000          # stop once data/raw/posts.jsonl holds this many posts
+min_matches: 2               # minimum number of DISTINCT keywords per kept post
+keywords_file: config/keywords.txt
+output_dir: data/raw
+
+jetstream:
+  enabled: true
+  # v2 (recommended by https://bsky.network/docs/jetstream):
+  url: wss://jetstream.us-east.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents?collections=app.bsky.feed.post
+  # v1 (legacy) also works, e.g.:
+  # url: wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post
+  checkpoint_interval_s: 5     # how often the cursor is written to disk
+  cursor_rewind_s: 5           # v1 only: resume this many seconds before the saved time_us
+  backoff_initial_s: 1
+  backoff_max_s: 60
+  # Which post deletions to log in deleted.jsonl:
+  #   collected = only deletions of posts we have stored (small file, default)
+  #   all       = every post deletion on the network (very large file)
+  record_deletes: collected
+
+progress_every: 100          # print progress every N kept posts
+heartbeat_s: 60              # also print a status line at least this often
+
+search:
+  enabled: false               # Source B is off by default
+  host: https://bsky.social
+  queries_file: config/search_queries.txt
+  page_limit: 100              # results per request (API max 100)
+  max_pages: 5                 # pages per query
+  delay_s: 2                   # pause between requests
+  max_retries: 5               # retries on 429 / 5xx
