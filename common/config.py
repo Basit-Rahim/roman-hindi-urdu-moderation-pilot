@@ -41,6 +41,10 @@ class PrevalenceSettings:
     )
     backoff_initial_s: float = 1
     backoff_max_s: float = 60
+    # Replay mode (--since/--until): Jetstream v2 archive over HTTP
+    replay_host: str = "https://jetstream.us-east.bsky.network"
+    replay_output: Path = ROOT / "data/prevalence/prevalence_7d.json"
+    gap_threshold_s: float = 300
 
 
 @dataclass

@@ -9,3 +9,7 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+
+# Run logs (local paths) and checkpoint backups: keep only the count files
+data/prevalence/*.log
+data/prevalence/*.backup-*.json

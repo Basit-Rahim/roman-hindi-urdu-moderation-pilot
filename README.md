@@ -13,7 +13,8 @@ Bluesky**
 config/       settings.yaml, keywords.txt, search_queries.txt
 
 collection/   step 1 scripts: search, prevalence, clean, stats, export_public
-              (jetstream.py is the stream client used by prevalence)
+              (jetstream.py is the live stream client and jetstream_replay.py
+              the archive client used by prevalence)
 
 common/       shared code: config loading, keyword/script/link filters,
               file and time helpers, Bluesky constants
@@ -59,6 +60,7 @@ The baseline runs separately, alongside the pipeline:
 | Step | Command | Output |
 |---|---|---|
 | Prevalence on the live stream (24 h, counts only) | `python -m collection.prevalence` | `data/prevalence/prevalence.json` |
+| Prevalence from the archive (7 days, counts only) | `python -m collection.prevalence --since 2026-11-17 --until 2026-11-24` | `data/prevalence/prevalence_7d.json` |
 
 Useful variants:
 
@@ -67,6 +69,7 @@ python -m collection.search --test-minutes 10   # test run into data/raw/test/, 
 python -m collection.stats                      # stats for the raw file
 python -m collection.stats --input data/raw/test/posts.jsonl
 python -m collection.prevalence --hours 0.05    # 3-minute prevalence smoke test (new run)
+python -m collection.prevalence --since 2026-11-20T00:00 --until 2026-11-20T00:20 --output data/prevalence/smoke.json
 ```
 
 ## Step 1: Data collection
@@ -156,8 +159,14 @@ UTC hour:
 - posts matched (2 or more distinct keywords)
 - posts with 1 or more keywords
 - the `langs` values of all scanned posts and of matched posts
-- the scripts of matched posts
+- the scripts of all scanned posts and of matched posts
+- `langs` × script tables for all scanned posts and for matched posts
 - keyword frequencies among matched posts
+
+The `langs` × script table (`scanned_langs_script`) makes it possible to
+compare posts tagged `hi`/`ur` written in Devanagari or Arabic script with
+Romanised posts tagged `en`. Script is detected as described under
+[Filtering](#filtering-commonfilterspy).
 
 No text, URIs, DIDs or handles are saved. The file is rewritten every 60
 seconds (`prevalence.save_interval_s`).
@@ -188,6 +197,109 @@ Start-Process .venv\Scripts\python.exe -ArgumentList "-u","-m","collection.preva
 The machine must stay awake for the whole run. Gaps longer than Jetstream's
 replay window are lost; `connections` and `resumes` in the file show whether
 this happened.
+
+### Prevalence from the archive (`--since` / `--until`, counts only)
+
+With `--since` (and optionally `--until`, default: start of today, UTC), the
+prevalence step reads a past window from Jetstream v2's archive instead of
+the live stream, then stops. The keyword filter and counts are the same as in
+live mode, kept in totals and **per UTC day**. Output goes to
+`data/prevalence/prevalence_7d.json` (`prevalence.replay_output`); the step
+refuses to write over the 24-hour live file.
+
+```bash
+python -m collection.prevalence --since 2026-11-17 --until 2026-11-24
+```
+
+Times are UTC; `--until` is exclusive. It needs `JETSTREAM_API_KEY` in `.env`
+(create one at <https://bsky.network/account#api-keys-section-heading>). The
+key is sent only to the Jetstream host and is never printed or saved.
+
+**Method** (`collection/jetstream_replay.py`, following the
+[replay docs](https://bsky.network/docs/jetstream-replay)):
+
+1. `listSegments` lists the archive's sealed segments with their sequence and
+   time ranges. The window is mapped onto a sequence range. The archive on
+   `jetstream.us-east.bsky.network` started on 2 Oct 2026 when checked.
+2. `planSnapshot`, filtered to `app.bsky.feed.post` commits, says which
+   segments to download whole (`getSegment`) and which blocks to fetch
+   (`getBlock`). Posts are in almost every block, so most segments come
+   whole; the filter saves little.
+3. Each segment is streamed block by block (zstd frames, columnar layout).
+   For segments that straddle the window edges, the block index in the
+   segment footer is used to skip blocks outside the window.
+4. Each event is checked against the window by its `witnessed_at` time
+   (the live stream's `time_us`). Post creates (`kind` 1) are decoded from
+   DAG-CBOR and counted. Days are UTC days of `witnessed_at`, not the
+   client-set `createdAt`.
+5. Undocumented `kind` 7 events are skipped and counted under
+   `resync_post_records_skipped`. Sampled blocks of this kind held one
+   account's older posts (dated months earlier) re-sent at once, so they are
+   not new posts.
+
+Downloads are metered by compressed bytes. On HTTP 429 the step waits for
+`Retry-After`; on network errors and 5xx it backs off (1 s doubling to 60 s)
+and continues from the last finished block.
+
+**Resuming.** The last fully counted archive sequence number is saved with
+the counts every 60 seconds, in the same file write. Run the same command
+again to continue; `--fresh` starts over. Another run's file at the output
+path is never overwritten without `--fresh`.
+
+The archive can rewrite sealed segments after the fact. One segment shrank
+by about 169 KB overnight, probably as deleted records were purged, which
+shifted every later byte offset and block number. So a resumed run plans
+the rest of the window again from the saved sequence number, which does not
+change, and skips any event at or below it. Before reading each segment,
+its header checksum is compared with the plan; on a mismatch the rest of
+the window is planned again (`coverage.replans`). One consequence: posts
+deleted before a segment is read are not in the archive, so they are not
+counted.
+
+**Coverage.** The `coverage` section records the first and last event time,
+events in the window (by kind), post creates, updates and deletes,
+`resync_post_records_skipped`, every gap between consecutive events longer
+than 5 minutes (`prevalence.gap_threshold_s`) with start, end and length,
+reconnects, HTTP 429 waits, resumes and bytes downloaded. `summary` holds the
+headline figures, including the scripts of posts tagged `hi` and `ur`.
+
+**Run of 17–23 Nov 2026** (`data/prevalence/prevalence_7d.json`):
+
+- Window covered: 2026-11-17T00:00:00Z to 2026-11-23T23:59:59Z, 151
+  segments, 229,897,866 events, 24.0 GB downloaded.
+- Coverage gaps: none longer than 5 minutes. 88 reconnects and 34 HTTP 429
+  waits, all recovered. The run was stopped and resumed twice; two segments
+  were rewritten by the archive during the run and were planned again
+  (`replans: 2`).
+- Skipped: 2,584,377 post records in `kind` 7 resync events.
+
+| | count |
+|---|---|
+| posts scanned | 23,214,223 |
+| matched (2+ keywords) | 254 (1.09 per 100,000) |
+| 1+ keyword | 10,220 |
+
+Language tags of the 254 matches: missing 106, `en` only 97, includes
+`hi` or `ur` 32, other 19 (mostly `vi`, 15). Scripts: latin 234, mixed 20.
+
+Posts tagged `hi` (all 23.2M scanned): 1,350, of which 239 Devanagari only,
+252 latin, 838 mixed, 21 other. Posts tagged `ur`: 215, of which 23 Arabic
+script only, 65 latin, 127 mixed.
+
+| UTC day | scanned | matched | per 100k |
+|---|---|---|---|
+| 2026-11-17 | 3,448,516 | 31 | 0.90 |
+| 2026-11-18 | 3,425,960 | 32 | 0.93 |
+| 2026-11-19 | 3,467,799 | 33 | 0.95 |
+| 2026-11-20 | 3,409,525 | 34 | 1.00 |
+| 2026-11-21 | 3,103,275 | 32 | 1.03 |
+| 2026-11-22 | 3,049,687 | 38 | 1.25 |
+| 2026-11-23 | 3,309,461 | 54 | 1.63 |
+
+**Privacy.** Post records and account identifiers exist only in memory while
+a block is processed. The block decoder steps over the DID, rkey and rev columns
+using only their lengths and never returns them. Nothing is written to disk except aggregate counts,
+coverage times and archive positions (segment names and sequence numbers).
 
 ### What is stored
 
@@ -220,8 +332,10 @@ It holds lines like `{"type": "post", "uri": ...}` or
 
 - `data/raw/` contains post text and **must never be committed**. It is
   listed in `.gitignore`. Check `git status` before every commit.
-- `.env` holds credentials and is also ignored. `.env.example` lists only
-  variable names.
+- `.env` holds credentials (`BSKY_APP_PASSWORD`, `JETSTREAM_API_KEY`) and is
+  also ignored. `.env.example` lists only variable names.
+- Prevalence files (live and archive) hold aggregate counts only: no text,
+  URIs, DIDs or handles.
 - Use only a Bluesky **App Password**, never the main account password.
 - Only `collection.export_public` output may be shared. It has no text, but
   each `uri` contains the author's DID, which can be resolved to their

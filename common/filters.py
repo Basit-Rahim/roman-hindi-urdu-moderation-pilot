@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -42,17 +43,42 @@ class KeywordMatcher:
         return len(self.find(text)) >= min_matches
 
 
+SCRIPTS = ("latin", "arabic", "devanagari")
+
+
 def _letter_script(ch: str) -> str | None:
+    """Script of one character: a letter whose Unicode name starts with the script name."""
     if not ch.isalpha():
         return None
     name = unicodedata.name(ch, "")
-    if name.startswith("LATIN"):
-        return "latin"
-    if name.startswith("ARABIC"):
-        return "arabic"
-    if name.startswith("DEVANAGARI"):
-        return "devanagari"
+    for script in SCRIPTS:
+        if name.startswith(script.upper()):
+            return script
     return None
+
+
+@lru_cache(maxsize=1)
+def _script_patterns() -> tuple[tuple[str, re.Pattern[str]], ...]:
+    """One character-class regex per script, built once from _letter_script.
+
+    Scanning all code points takes about a second, but each detect_script call
+    is then a few regex searches instead of a Python loop over characters,
+    which matters when classifying millions of posts.
+    """
+    ranges: dict[str, list[list[int]]] = {s: [] for s in SCRIPTS}
+    for cp in range(0x110000):
+        if 0xD800 <= cp <= 0xDFFF:
+            continue
+        script = _letter_script(chr(cp))
+        if script:
+            spans = ranges[script]
+            if spans and spans[-1][1] == cp - 1:
+                spans[-1][1] = cp
+            else:
+                spans.append([cp, cp])
+    esc = lambda cp: f"\\U{cp:08x}"
+    return tuple((s, re.compile("[" + "".join(f"{esc(a)}-{esc(b)}" for a, b in ranges[s]) + "]"))
+                 for s in SCRIPTS)
 
 
 def detect_script(text: str) -> str:
@@ -60,16 +86,14 @@ def detect_script(text: str) -> str:
 
     Returns 'latin', 'arabic' or 'devanagari' if exactly one of these scripts
     occurs, 'mixed' if two or more occur, and 'other' if none occurs (e.g. only
-    emoji, digits or another script; this cannot happen for kept posts, which
-    always contain Latin keywords). Punctuation, digits, emoji and letters of
-    other scripts are ignored.
+    emoji, digits or another script such as Japanese). Punctuation, digits,
+    emoji and letters of other scripts are ignored.
     """
-    present = {s for s in map(_letter_script, text or "") if s}
+    text = text or ""
+    present = [s for s, pattern in _script_patterns() if pattern.search(text)]
     if len(present) > 1:
         return "mixed"
-    if len(present) == 1:
-        return present.pop()
-    return "other"
+    return present[0] if present else "other"
 
 
 # --------------------------------------------------------------------------- links

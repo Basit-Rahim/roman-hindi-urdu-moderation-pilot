@@ -31,6 +31,10 @@ prevalence:                  # python -m collection.prevalence (counts only, no 
   jetstream_url: wss://jetstream.us-east.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents?collections=app.bsky.feed.post
   backoff_initial_s: 1       # reconnect delay, doubling up to backoff_max_s
   backoff_max_s: 60
+  # Replay mode (--since/--until): reads Jetstream's archive; needs JETSTREAM_API_KEY in .env
+  replay_host: https://jetstream.us-east.bsky.network
+  replay_output: data/prevalence/prevalence_7d.json
+  gap_threshold_s: 300       # report gaps between events longer than this
 
 clean:                       # python -m collection.clean
   input: data/raw/posts.jsonl
