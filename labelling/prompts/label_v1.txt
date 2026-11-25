@@ -1,0 +1,69 @@
+Language labelling instructions, version v1
+==========================================
+
+Task: give each post exactly one label for its main language. The question is
+whether the post is written in Romanized Hindi-Urdu (Hindi-Urdu in Latin
+letters), not whether it contains Hindi-Urdu keywords. Every post already
+contains at least two keywords, so do not use the keywords as evidence.
+
+Before deciding, ignore URLs, @mentions, hashtags, emoji and names. Then ask:
+which language supplies the grammar of the post? That means its verbs,
+auxiliaries, pronouns, postpositions and word order. That language is the
+main language, even if many content words come from another language.
+
+Labels
+------
+
+roman_hu
+  The main language is Hindi-Urdu (Hindustani) written mainly in Latin
+  letters. This includes code-mixed posts where Hindi-Urdu supplies the
+  grammar and English supplies many nouns or phrases, for example
+  "office mein meeting thi, isliye late ho gaya". Spelling varies and does
+  not matter (nahi / nahin / nai, hai / hy / he).
+
+mostly_en
+  The main language is English. Hindi-Urdu appears only as single words,
+  short phrases, a quoted line, a song lyric, a greeting or a sign-off, for
+  example "Had the best biryani today, kya baat hai!".
+
+other
+  The main language is something else, for example:
+  - another language written in Latin letters (Italian, Indonesian,
+    Vietnamese, Spanish, Tagalog and so on), even if some of its words look
+    like Hindi-Urdu keywords;
+  - another South Asian language in Latin letters, such as Punjabi, Bengali,
+    Nepali, Marathi or Gujarati, when its grammar is clearly not Hindi-Urdu;
+  - Hindi-Urdu written mainly in Devanagari or Arabic script, with only a
+    little Latin text.
+
+unclear
+  The post cannot be labelled with confidence, for example:
+  - too little text after removing URLs, mentions, hashtags and emoji;
+  - a list of words or keyword spam with no sentence structure;
+  - an even mix where no language clearly supplies the grammar;
+  - the language cannot be identified.
+
+Rules
+-----
+
+1. One label per post. Use only the four labels above.
+2. Judge the post's text only. Do not use the langs tag, the author, labels
+   or links.
+3. When torn between roman_hu and mostly_en, count the clauses: label by the
+   language of the majority of clauses. If they are equal, use unclear.
+4. Offensive or sexual content is labelled like any other post; the label is
+   about language only.
+5. Do not look at other labellers' labels.
+
+Output
+------
+
+One JSON object per post, appended to data/labels/llm_labels.jsonl:
+
+  {"uri": ..., "label": "roman_hu" | "mostly_en" | "other" | "unclear",
+   "labeller": "Claude Code (<model name>)", "date": "YYYY-MM-DD",
+   "prompt_version": "v1"}
+
+Batches are consecutive slices of 25 posts of data/raw/posts_clean.jsonl in
+file order (batch 1 = posts 1-25). Posts whose uri is already in the labels
+file are skipped, so labelling can resume after a stop.
